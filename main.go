@@ -7,6 +7,14 @@ import (
 	"web_server/netUtils"
 )
 
+type tcpServer struct {
+	connectionTimeout    float64
+	IPV4Address          string
+	port                 int
+	serverFileDescriptor int
+	clientAddresses      map[int]syscall.SockaddrInet4
+}
+
 const CONNECTION_TIMEOUT float64 = 60 //seconds
 const KILOBYTE = 1024                 //bytes
 
@@ -32,23 +40,32 @@ func main() {
 	}
 }
 
-func handleRequest(clientFileDescriptor int) {
+func (ts tcpServer) handleRequest(clientFileDescriptor int) {
 	defer func() {
-		err := closeSocket(clientFileDescriptor)
+		err := ts.closeSocket(clientFileDescriptor)
 		if err != nil {
-			log.Printf("error while trying to close the client socket of file descriptor %d: %v", clientFileDescriptor, err)
+			log.Printf("error while trying to close the client socket with IP: %v and port: %d: %v",
+				ts.clientAddresses[clientFileDescriptor].Addr,
+				ts.clientAddresses[clientFileDescriptor].Port,
+				err)
 		}
 	}()
 	request, err := readRequest(clientFileDescriptor)
 	if err != nil {
-		log.Printf("error while trying to read the request from file descriptor %d: %v", clientFileDescriptor, err)
+		log.Printf("error while trying to read the request from IP: %v and port: %d: %v",
+			ts.clientAddresses[clientFileDescriptor].Addr,
+			ts.clientAddresses[clientFileDescriptor].Port,
+			err)
 		return
 	}
 	if len(request) > 0 {
 		log.Print("request received: ", string(request))
 		err = sendResponse(clientFileDescriptor, request)
 		if err != nil {
-			log.Printf("error while trying to send a response to file descriptor %d: %v", clientFileDescriptor, err)
+			log.Printf("error while trying to send a response to IP: %v and port: %d: %v",
+				ts.clientAddresses[clientFileDescriptor].Addr,
+				ts.clientAddresses[clientFileDescriptor].Port,
+				err)
 		}
 	}
 }
@@ -85,15 +102,22 @@ func setupServer(IPAddress netUtils.IP, port int) (serverFileDescriptor int, err
 	return serverFileDescriptor, nil
 }
 
-func waitClientConnections(serverFileDescriptor int, clientFileDescriptorChan chan int) {
+func (ts *tcpServer) listenClientConnections(serverFileDescriptor int, clientFileDescriptorChan chan int) {
+	log.Println("the server is listening for connections...")
 	for {
 		clientFileDescriptor, clientSocket, err := syscall.Accept(serverFileDescriptor)
 		if err != nil {
 			log.Print("error while trying to accept a connection: ", err)
 			continue
 		}
+		sockAddrInet4, ok := clientSocket.(*syscall.SockaddrInet4)
+		if !ok {
+			log.Print("sockaddrinet4 assertion from sockaddr failed")
+			continue
+		}
+		ts.clientAddresses[clientFileDescriptor] = *sockAddrInet4
 		clientFileDescriptorChan <- clientFileDescriptor
-		log.Println("connected with ", clientSocket)
+		log.Printf("connected with IP: %v and port: %d", sockAddrInet4.Addr, sockAddrInet4.Port)
 	}
 }
 
@@ -129,10 +153,15 @@ func readRequest(clientFileDescriptor int) (request []byte, err error) {
 	}
 }
 
-func closeSocket(fileDescriptor int) (err error) {
+func (ts *tcpServer) closeSocket(fileDescriptor int) (err error) {
 	if err = syscall.Close(fileDescriptor); err != nil {
 		return err
 	}
-	log.Printf("socket with file descriptor %d is closed", fileDescriptor)
+	log.Printf("socket with IP: %v and port: %d is closed",
+		ts.clientAddresses[fileDescriptor].Addr,
+		ts.clientAddresses[fileDescriptor].Port)
+	if fileDescriptor != ts.serverFileDescriptor {
+		delete(ts.clientAddresses, fileDescriptor)
+	}
 	return nil
 }
