@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"syscall"
 	"time"
@@ -19,24 +20,18 @@ const CONNECTION_TIMEOUT float64 = 60 //seconds
 const KILOBYTE = 1024                 //bytes
 
 func main() {
-	IPAddr, err := netUtils.IPStringToIPBytes("127.0.0.1")
-	if err != nil {
-		log.Fatal("the IP provided is not valid: ", err)
-	}
-	serverFileDescriptor, err := setupServer(IPAddr, 34093)
-	if err != nil {
-		log.Fatal("error while booting the server: ", err)
-	}
-	defer func() {
-		err = closeSocket(serverFileDescriptor)
-		if err != nil {
-			log.Print("error while closing the server socket: ", err)
-		}
-	}()
+	//I need to move this main code to a new main, then make this file a server lib
+	ts := tcpServer{connectionTimeout: 60, IPV4Address: "127.0.0.1", port: 34093, clientAddresses: make(map[int]syscall.SockaddrInet4)}
+
+	ts.SetupServer()
+	ts.HandleConnections()
+}
+
+func (ts tcpServer) HandleConnections() {
 	clientFileDescriptorChan := make(chan int)
-	go waitClientConnections(serverFileDescriptor, clientFileDescriptorChan)
+	go ts.listenClientConnections(ts.serverFileDescriptor, clientFileDescriptorChan)
 	for clientFileDescriptor := range clientFileDescriptorChan {
-		go handleRequest(clientFileDescriptor)
+		go ts.handleRequest(clientFileDescriptor)
 	}
 }
 
@@ -79,26 +74,46 @@ func sendResponse(clientFileDescriptor int, request []byte) error {
 	return nil
 }
 
-func setupServer(IPAddress netUtils.IP, port int) (serverFileDescriptor int, err error) {
+func (ts tcpServer) CloseServerSocket() (err error) {
+	err = ts.closeSocket(ts.serverFileDescriptor)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ts tcpServer) SetupServer() (serverFileDescriptor int, err error) {
+	IPAddress, err := netUtils.IPStringToIPBytes(ts.IPV4Address)
+	if err != nil {
+		return serverFileDescriptor, fmt.Errorf("the IP provided is not valid: %v", err)
+	}
 	serverFileDescriptor, err = syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
-		return serverFileDescriptor, err
+		return serverFileDescriptor, fmt.Errorf("error while creating server socket: %v", err)
 	}
+	defer func() {
+		if err != nil {
+			err = ts.CloseServerSocket()
+			if err != nil {
+				log.Printf("error while closing the server socket: %v", err)
+			}
+		}
+	}()
 	for counter := 0; counter < 60; counter++ {
-		if err = syscall.Bind(serverFileDescriptor, &syscall.SockaddrInet4{Addr: IPAddress, Port: port}); err == syscall.EADDRINUSE {
+		if err = syscall.Bind(serverFileDescriptor, &syscall.SockaddrInet4{Addr: IPAddress, Port: ts.port}); err == syscall.EADDRINUSE {
 			log.Println("address in use, trying to bind again in 5 secs until 5 minutes")
 			time.Sleep(5 * time.Second)
 		} else if err != nil {
-			return serverFileDescriptor, err
+			return serverFileDescriptor, fmt.Errorf("error while binding the server socket: %v", err)
 		} else {
 			break
 		}
 	}
 	err = syscall.Listen(serverFileDescriptor, 1)
 	if err != nil {
-		return serverFileDescriptor, err
+		return serverFileDescriptor, fmt.Errorf("error while preparing server socket to accept connections: %v", err)
 	}
-	log.Println("the server is listening for connections...")
+
 	return serverFileDescriptor, nil
 }
 
