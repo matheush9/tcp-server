@@ -1,4 +1,4 @@
-package netUtils
+package iputils
 
 import (
 	"errors"
