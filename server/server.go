@@ -79,15 +79,15 @@ func (sc ServerConfig) CloseServerSocket() (err error) {
 	return nil
 }
 
-func (sc *ServerConfig) SetupServer() (serverFileDescriptor int, err error) {
+func (sc *ServerConfig) SetupServer() (err error) {
 	sc.clientAddresses = make(map[int]syscall.SockaddrInet4)
 	IPAddress, err := iputils.IPStringToIPBytes(sc.IPV4Address)
 	if err != nil {
-		return serverFileDescriptor, fmt.Errorf("the IP provided is not valid: %v", err)
+		return fmt.Errorf("the IP provided is not valid: %v", err)
 	}
-	serverFileDescriptor, err = syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	sc.serverFileDescriptor, err = syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
-		return serverFileDescriptor, fmt.Errorf("error while creating server socket: %v", err)
+		return fmt.Errorf("error while creating server socket: %v", err)
 	}
 	defer func() {
 		if err != nil {
@@ -98,21 +98,21 @@ func (sc *ServerConfig) SetupServer() (serverFileDescriptor int, err error) {
 		}
 	}()
 	for counter := 0; counter < 60; counter++ {
-		if err = syscall.Bind(serverFileDescriptor, &syscall.SockaddrInet4{Addr: IPAddress, Port: sc.Port}); err == syscall.EADDRINUSE {
+		if err = syscall.Bind(sc.serverFileDescriptor, &syscall.SockaddrInet4{Addr: IPAddress, Port: sc.Port}); err == syscall.EADDRINUSE {
 			log.Println("address in use, trying to bind again in 5 secs until 5 minutes")
 			time.Sleep(5 * time.Second)
 		} else if err != nil {
-			return serverFileDescriptor, fmt.Errorf("error while binding the server socket: %v", err)
+			return fmt.Errorf("error while binding the server socket: %v", err)
 		} else {
 			break
 		}
 	}
-	err = syscall.Listen(serverFileDescriptor, 1)
+	err = syscall.Listen(sc.serverFileDescriptor, 1)
 	if err != nil {
-		return serverFileDescriptor, fmt.Errorf("error while preparing server socket to accept connections: %v", err)
+		return fmt.Errorf("error while preparing server socket to accept connections: %v", err)
 	}
 
-	return serverFileDescriptor, nil
+	return nil
 }
 
 func (sc *ServerConfig) listenClientConnections(serverFileDescriptor int, clientFileDescriptorChan chan int) {
