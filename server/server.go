@@ -18,30 +18,36 @@ type ServerConfig struct {
 	clientAddresses      map[int]syscall.SockaddrInet4
 }
 
-const KILOBYTE = 1024 //bytes
+type ClientRequest struct {
+	Request       string
+	ClientAddress syscall.SockaddrInet4
+	clientFd      int
+}
 
-func (sc ServerConfig) HandleConnections() (err error) {
+const kilobyte = 1024 //bytes
+
+func (sc *ServerConfig) HandleConnections(clientReqChan chan ClientRequest) (err error) {
 	if sc.serverFileDescriptor == 0 {
 		return errors.New("you have to configure the server before handling connections")
 	}
 	clientFileDescriptorChan := make(chan int)
+
 	go sc.listenClientConnections(sc.serverFileDescriptor, clientFileDescriptorChan)
 	for clientFileDescriptor := range clientFileDescriptorChan {
-		go sc.handleRequest(clientFileDescriptor)
+		requestChan := make(chan string)
+
+		go sc.handleRequest(clientFileDescriptor, requestChan)
+		for request := range requestChan {
+			clientReqChan <- ClientRequest{
+				Request:       request,
+				ClientAddress: sc.clientAddresses[clientFileDescriptor],
+				clientFd:      clientFileDescriptor}
+		}
 	}
 	return nil
 }
 
-func (sc ServerConfig) handleRequest(clientFileDescriptor int) {
-	defer func() {
-		err := sc.closeSocket(clientFileDescriptor)
-		if err != nil {
-			log.Printf("error while trying to close the client socket with IP: %v and port: %d: %v",
-				sc.clientAddresses[clientFileDescriptor].Addr,
-				sc.clientAddresses[clientFileDescriptor].Port,
-				err)
-		}
-	}()
+func (sc ServerConfig) handleRequest(clientFileDescriptor int, requestChan chan string) {
 	request, err := sc.readRequest(clientFileDescriptor)
 	if err != nil {
 		log.Printf("error while trying to read the request from IP: %v and port: %d: %v",
@@ -52,19 +58,25 @@ func (sc ServerConfig) handleRequest(clientFileDescriptor int) {
 	}
 	if len(request) > 0 {
 		log.Print("request received: ", string(request))
-		err = sendResponse(clientFileDescriptor, request)
-		if err != nil {
-			log.Printf("error while trying to send a response to IP: %v and port: %d: %v",
-				sc.clientAddresses[clientFileDescriptor].Addr,
-				sc.clientAddresses[clientFileDescriptor].Port,
-				err)
-		}
 	}
+	requestChan <- request
+	close(requestChan)
 }
 
-func sendResponse(clientFileDescriptor int, request []byte) error {
-	response := append([]byte("I get your message: "), request...)
-	_, err := syscall.Write(clientFileDescriptor, response)
+func (sc *ServerConfig) SendResponse(clientReq ClientRequest, response string) error {
+	if clientReq.clientFd == 0 {
+		return errors.New("invalid file descriptor")
+	}
+	defer func() {
+		err := sc.closeSocket(clientReq.clientFd)
+		if err != nil {
+			log.Printf("error while trying to close the client socket with IP: %v and port: %d: %v",
+				sc.clientAddresses[clientReq.clientFd].Addr,
+				sc.clientAddresses[clientReq.clientFd].Port,
+				err)
+		}
+	}()
+	_, err := syscall.Write(clientReq.clientFd, []byte(response))
 	if err != nil {
 		return err
 	}
@@ -134,20 +146,22 @@ func (sc *ServerConfig) listenClientConnections(serverFileDescriptor int, client
 	}
 }
 
-func (sc ServerConfig) readRequest(clientFileDescriptor int) (request []byte, err error) {
+func (sc ServerConfig) readRequest(clientFileDescriptor int) (request string, err error) {
 	clientInputChan := make(chan []byte)
 
 	go func(chan []byte) {
-		buffer := make([]byte, KILOBYTE/2)
+		buffer := make([]byte, kilobyte/2)
+		var requestBytes []byte
 		for {
 			bytesRead, err := syscall.Read(clientFileDescriptor, buffer)
 			if err != nil {
 				return
 			}
-			request = append(request, buffer[:bytesRead]...)
-			clientInputChan <- request
+			requestBytes := append(requestBytes, buffer[:bytesRead]...)
+			clientInputChan <- requestBytes
 			if len(buffer) != bytesRead || bytesRead == 0 {
 				close(clientInputChan)
+				request = string(requestBytes)
 				return
 			}
 		}

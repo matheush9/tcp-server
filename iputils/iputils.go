@@ -8,6 +8,11 @@ import (
 
 type IP [4]byte
 
+type SockAddr4 struct {
+	Port int
+	Addr string
+}
+
 func IPStringToIPBytes(IPString string) (IP, error) {
 	var IPBlockBuilder strings.Builder
 	var IP4Bytes []byte
